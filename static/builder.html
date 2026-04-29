@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pipeline Builder - VertexForge OSS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/" class="nav-brand">VertexForge <span style="color: var(--text-secondary); font-weight: 400;">OSS</span></a>
+        <div class="nav-links">
+            <a href="/builder" class="nav-link active">Builder</a>
+            <a href="/pipelines" class="nav-link">Pipelines</a>
+            <a href="/executions" class="nav-link">Executions</a>
+        </div>
+    </nav>
+
+    <div class="builder-layout" style="padding: 24px; max-width: 1600px; margin: 0 auto;">
+        <!-- LEFT: Builder Form -->
+        <div>
+            <div class="page-header" style="margin-bottom: 20px;">
+                <h1>Pipeline Builder</h1>
+                <p>Build Linear Multi-Agent Systems Without Code</p>
+            </div>
+
+            <!-- Pipeline Builder -->
+            <div class="card">
+                <div class="card-header">
+                    <h2><span class="icon">&#9998;</span> Configuration</h2>
+                </div>
+                <div class="card-body">
+                    <div class="form-group">
+                        <label>Pipeline Name</label>
+                        <input type="text" id="pipeline-name" placeholder="e.g., Research Assistant">
+                    </div>
+
+                    <div class="form-group">
+                        <label>Description</label>
+                        <textarea id="pipeline-desc" placeholder="What does this pipeline do?"></textarea>
+                    </div>
+
+                    <div class="form-group">
+                        <label style="margin-bottom: 12px;">Agent Nodes</label>
+                        <div id="nodes-container"></div>
+                        <button type="button" class="btn btn-secondary btn-block" style="margin-top: 12px;" onclick="addNode()">
+                            + Add Agent Node
+                        </button>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Test Input</label>
+                        <textarea id="test-input" class="mono" placeholder="Enter input for your pipeline...">What are the latest developments in AI?</textarea>
+                    </div>
+
+                    <div class="action-group">
+                        <button type="button" class="btn btn-secondary" onclick="loadExample(1)">Load Example 1</button>
+                        <button type="button" class="btn btn-secondary" onclick="loadExample(2)">Load Example 2</button>
+                        <button type="button" class="btn btn-secondary" onclick="loadExample(3)">Load Example 3</button>
+                    </div>
+
+                    <div class="action-group" style="margin-top: 16px;">
+                        <button type="button" class="btn btn-primary" style="flex: 2;" onclick="saveAndExecute()">
+                            &#9654; Save & Execute
+                        </button>
+                        <button type="button" class="btn btn-secondary" style="flex: 1;" onclick="savePipeline()">
+                            Save Only
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT: Execution Log -->
+        <div>
+            <div class="execution-panel" style="border: 1px solid var(--border); border-radius: 12px; background: var(--bg-surface);">
+                <div class="execution-header">
+                    <h3><span class="status-dot" id="status-dot" style="background: #6B7280;"></span> Execution</h3>
+                    <span class="status-badge status-idle" id="execution-status-badge">Idle</span>
+                </div>
+                <div class="execution-log" id="results-content">
+                    <div class="log-empty">
+                        <div class="log-empty-icon">&#128736;</div>
+                        <div>
+                            <p style="font-weight: 500; color: var(--text-secondary); margin-bottom: 4px;">Ready to Execute</p>
+                            <p style="font-size: 12px;">Build a pipeline and click "Save & Execute" to see results here.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let currentPipelineId = null;
+        let ws = null;
+
+        const tools = [
+            'web_search', 'get_current_date', 'calculate',
+            'calculate_statistics', 'read_file', 'list_directory',
+            'write_file', 'count_words', 'extract_urls'
+        ];
+
+        // Initialize with one node
+        window.onload = function() {
+            addNode();
+        };
+
+        function generateUUID() {
+            return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+                var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+                return v.toString(16);
+            });
+        }
+
+        function addNode(data = null) {
+            const container = document.getElementById('nodes-container');
+            const nodeCount = container.children.length + 1;
+
+            const nodeCard = document.createElement('div');
+            nodeCard.className = 'node-card';
+
+            const toolsHtml = tools.map(tool => `
+                <label class="tool-toggle" for="tool-${tool}-${nodeCount}">
+                    <input type="checkbox" id="tool-${tool}-${nodeCount}" class="tool-${tool}" value="${tool}"
+                        ${data && data.tools && data.tools.includes(tool) ? 'checked' : ''}>
+                    ${tool}
+                </label>
+            `).join('');
+
+            nodeCard.innerHTML = `
+                <div class="node-header">
+                    <div class="node-badge">
+                        <span class="number">${nodeCount}</span>
+                        <span>Node</span>
+                    </div>
+                    <button type="button" class="btn btn-danger btn-sm" onclick="this.closest('.node-card').remove()">
+                        Remove
+                    </button>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label>Node ID</label>
+                        <input type="text" class="node-id mono" placeholder="e.g., extractor"
+                            value="${data ? data.node_id : 'agent_'+nodeCount}">
+                    </div>
+                    <div class="form-group">
+                        <label>Model</label>
+                        <input type="text" class="node-model mono" placeholder="e.g., kimi-k2.5"
+                            value="${data ? data.model : 'kimi-k2.5'}">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>System Prompt</label>
+                    <textarea class="node-prompt" placeholder="Define this agent's behavior...">${data ? data.system_prompt : ''}</textarea>
+                </div>
+                <div class="row">
+                    <div class="form-group">
+                        <label>Temperature (0.0 - 2.0)</label>
+                        <input type="number" class="node-temp mono" min="0" max="2" step="0.1"
+                            value="${data ? data.temperature : 0.7}">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Available Tools</label>
+                    <div class="tools-grid">
+                        ${toolsHtml}
+                    </div>
+                </div>
+            `;
+
+            container.appendChild(nodeCard);
+        }
+
+        function getNodesData() {
+            const nodes = [];
+            const nodeCards = document.querySelectorAll('.node-card');
+
+            nodeCards.forEach(card => {
+                const nodeId = card.querySelector('.node-id').value;
+                const toolsChecked = Array.from(card.querySelectorAll('.tools-grid input:checked'))
+                    .map(cb => cb.value);
+
+                nodes.push({
+                    node_id: nodeId,
+                    model: card.querySelector('.node-model').value,
+                    system_prompt: card.querySelector('.node-prompt').value,
+                    temperature: parseFloat(card.querySelector('.node-temp').value),
+                    tools: toolsChecked,
+                    max_tokens: null
+                });
+            });
+
+            return nodes;
+        }
+
+        function buildEdges(nodes) {
+            const edges = [];
+
+            if (nodes.length > 0) {
+                edges.push({ from: "START", to: nodes[0].node_id });
+            }
+
+            for (let i = 0; i < nodes.length - 1; i++) {
+                edges.push({
+                    from: nodes[i].node_id,
+                    to: nodes[i + 1].node_id
+                });
+            }
+
+            if (nodes.length > 0) {
+                edges.push({ from: nodes[nodes.length - 1].node_id, to: "END" });
+            }
+
+            return edges;
+        }
+
+        const examples = {
+            1: {
+                name: "Research Pipeline",
+                desc: "Extract entities, research with web search, then summarize",
+                input: "What are the main challenges and opportunities in quantum computing for 2025?",
+                nodes: [
+                    {
+                        node_id: "extractor",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are an entity extractor. Identify key topics, entities, and concepts from the input. List them clearly and concisely.",
+                        temperature: 0.0,
+                        tools: []
+                    },
+                    {
+                        node_id: "researcher",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a research analyst. Take the extracted entities and provide insights. Use web search to find current information.",
+                        temperature: 0.7,
+                        tools: ["web_search", "get_current_date"]
+                    },
+                    {
+                        node_id: "summarizer",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a summarizer. Review all previous outputs and create a concise summary with key points as bullet points.",
+                        temperature: 0.2,
+                        tools: []
+                    }
+                ]
+            },
+            2: {
+                name: "Code Review",
+                desc: "Analyze code for issues, then generate recommendations",
+                input: "Review this Python function:\ndef calculate(items):\n    total = 0\n    for i in range(len(items)):\n        total += items[i]['price'] * items[i]['quantity']\n    return total",
+                nodes: [
+                    {
+                        node_id: "analyzer",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a code analyzer. Examine the provided code and identify: 1) Potential bugs, 2) Performance issues, 3) Style violations, 4) Security concerns. Be specific with line references.",
+                        temperature: 0.3,
+                        tools: []
+                    },
+                    {
+                        node_id: "optimizer",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a code optimizer. Based on the issues found, provide an improved version of the code with explanations of what you changed and why.",
+                        temperature: 0.5,
+                        tools: []
+                    },
+                    {
+                        node_id: "documenter",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a technical documenter. Create a brief summary document explaining: 1) Original issues, 2) Optimized solution, 3) Best practices demonstrated.",
+                        temperature: 0.4,
+                        tools: []
+                    }
+                ]
+            },
+            3: {
+                name: "Data Processor",
+                desc: "Validate data, calculate statistics, generate insights report",
+                input: "Calculate statistics for these sales figures: 1200, 1450, 890, 2300, 1750, 980, 3100, 1420, 1680, 2050",
+                nodes: [
+                    {
+                        node_id: "validator",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a data validator. Check if the provided data is valid numerical data. If valid, extract the comma or space-separated numbers. If invalid, explain why.",
+                        temperature: 0.1,
+                        tools: []
+                    },
+                    {
+                        node_id: "calculator",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a statistics calculator. Use the calculate_statistics tool to compute mean, median, min, max, and count. Also calculate the sum manually using the calculate tool.",
+                        temperature: 0.0,
+                        tools: ["calculate", "calculate_statistics"]
+                    },
+                    {
+                        node_id: "reporter",
+                        model: "kimi-k2.5",
+                        system_prompt: "You are a report generator. Format the statistics into a professional summary with insights about the data distribution and any notable patterns.",
+                        temperature: 0.3,
+                        tools: []
+                    }
+                ]
+            }
+        };
+
+        function loadExample(num) {
+            const ex = examples[num];
+            if (!ex) return;
+
+            document.getElementById('pipeline-name').value = ex.name;
+            document.getElementById('pipeline-desc').value = ex.desc;
+            document.getElementById('test-input').value = ex.input;
+
+            document.getElementById('nodes-container').innerHTML = '';
+            ex.nodes.forEach(node => addNode(node));
+
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        async function savePipeline() {
+            const nodes = getNodesData();
+
+            if (nodes.length === 0) {
+                alert('Please add at least one agent node');
+                return;
+            }
+
+            const name = document.getElementById('pipeline-name').value || 'Unnamed Pipeline';
+            const description = document.getElementById('pipeline-desc').value;
+
+            const config = {
+                graph_name: name.toLowerCase().replace(/\s+/g, '_'),
+                version: "1.0.0",
+                description: description,
+                state: {
+                    fields: [
+                        { name: "messages", type: "List[BaseMessage]", reducer: "operator.add" },
+                        { name: "current_node", type: "str", default: "" },
+                        { name: "iteration_count", type: "int", default: 0 }
+                    ]
+                },
+                nodes: nodes,
+                edges: buildEdges(nodes),
+                entry_point: "START"
+            };
+
+            try {
+                const response = await fetch(`${API_BASE}/api/pipelines`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, config })
+                });
+
+                if (!response.ok) throw new Error('Failed to save');
+
+                const result = await response.json();
+                currentPipelineId = result.id;
+                alert('Pipeline saved!');
+            } catch (error) {
+                alert('Failed to save: ' + error.message);
+            }
+        }
+
+        async function saveAndExecute() {
+            const nodes = getNodesData();
+
+            if (nodes.length === 0) {
+                alert('Please add at least one agent node');
+                return;
+            }
+
+            const name = document.getElementById('pipeline-name').value || 'Unnamed Pipeline';
+            const description = document.getElementById('pipeline-desc').value;
+            const userInput = document.getElementById('test-input').value || 'Hello';
+
+            const config = {
+                graph_name: name.toLowerCase().replace(/\s+/g, '_'),
+                version: "1.0.0",
+                description: description,
+                state: {
+                    fields: [
+                        { name: "messages", type: "List[BaseMessage]", reducer: "operator.add" },
+                        { name: "current_node", type: "str", default: "" },
+                        { name: "iteration_count", type: "int", default: 0 }
+                    ]
+                },
+                nodes: nodes,
+                edges: buildEdges(nodes),
+                entry_point: "START"
+            };
+
+            try {
+                const saveResponse = await fetch(`${API_BASE}/api/pipelines`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, config })
+                });
+
+                if (!saveResponse.ok) throw new Error('Failed to save');
+
+                const pipeline = await saveResponse.json();
+                currentPipelineId = pipeline.id;
+
+                const execResponse = await fetch(`${API_BASE}/api/pipelines/${pipeline.id}/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input: userInput })
+                });
+
+                if (!execResponse.ok) throw new Error('Failed to start execution');
+
+                const execution = await execResponse.json();
+                window.location.href = `/executions/${execution.id}/view`;
+
+            } catch (error) {
+                alert('Failed: ' + error.message);
+            }
+        }
+
+        function escapeHtml(text) {
+            if (text === undefined || text === null) return '';
+            const div = document.createElement('div');
+            div.textContent = String(text);
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

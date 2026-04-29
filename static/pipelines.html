@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Saved Pipelines - VertexForge OSS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/" class="nav-brand">VertexForge <span style="color: var(--text-secondary); font-weight: 400;">OSS</span></a>
+        <div class="nav-links">
+            <a href="/builder" class="nav-link">Builder</a>
+            <a href="/pipelines" class="nav-link active">Pipelines</a>
+            <a href="/executions" class="nav-link">Executions</a>
+        </div>
+    </nav>
+
+    <div class="page">
+        <div class="page-header">
+            <h1>Saved Pipelines</h1>
+            <p>Manage your multi-agent pipeline configurations</p>
+        </div>
+
+        <div class="search-bar">
+            <input type="text" id="search-input" placeholder="Search pipelines..." oninput="filterPipelines()">
+            <a href="/builder" class="btn btn-primary">+ New Pipeline</a>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2><span class="icon">&#9776;</span> All Pipelines</h2>
+                <span id="pipeline-count" class="status-badge status-idle" style="text-transform: none;">Loading...</span>
+            </div>
+            <div class="card-body" style="padding: 0;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Name</th>
+                            <th>Description</th>
+                            <th>Created</th>
+                            <th>Nodes</th>
+                            <th style="text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="pipelines-table-body">
+                        <tr>
+                            <td colspan="5">
+                                <div class="log-loading">
+                                    <div class="spinner"></div>
+                                    Loading pipelines...
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let allPipelines = [];
+
+        document.addEventListener('DOMContentLoaded', loadPipelines);
+
+        async function loadPipelines() {
+            try {
+                const response = await fetch(`${API_BASE}/api/pipelines`);
+                allPipelines = await response.json();
+                renderPipelines(allPipelines);
+            } catch (error) {
+                console.error('Failed to load pipelines:', error);
+                document.getElementById('pipelines-table-body').innerHTML = `
+                    <tr><td colspan="5" style="text-align: center; padding: 40px; color: var(--text-muted);">
+                        Failed to load pipelines. <a href="#" onclick="loadPipelines()">Retry</a>
+                    </td></tr>
+                `;
+            }
+        }
+
+        function renderPipelines(pipelines) {
+            const tbody = document.getElementById('pipelines-table-body');
+            const countEl = document.getElementById('pipeline-count');
+            
+            countEl.textContent = `${pipelines.length} pipeline${pipelines.length !== 1 ? 's' : ''}`;
+
+            if (!pipelines || pipelines.length === 0) {
+                tbody.innerHTML = `
+                    <tr><td colspan="5" style="text-align: center; padding: 60px; color: var(--text-muted);">
+                        <div style="font-size: 24px; margin-bottom: 12px;">&#128194;</div>
+                        <p>No pipelines yet.</p>
+                        <a href="/builder" class="btn btn-primary" style="margin-top: 16px;">Create Your First Pipeline</a>
+                    </td></tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = pipelines.map(p => {
+                const nodeCount = p.config?.nodes?.length || 0;
+                const createdDate = new Date(p.created_at).toLocaleDateString();
+                const createdTime = new Date(p.created_at).toLocaleTimeString();
+                
+                return `
+                    <tr data-name="${escapeHtml(p.name.toLowerCase())}" data-desc="${escapeHtml((p.description || '').toLowerCase())}">
+                        <td>
+                            <div class="pipeline-name">${escapeHtml(p.name)}</div>
+                        </td>
+                        <td>
+                            <div class="pipeline-desc">${escapeHtml(p.description || 'No description')}</div>
+                        </td>
+                        <td>
+                            <div>${createdDate}</div>
+                            <div class="pipeline-date">${createdTime}</div>
+                        </td>
+                        <td>
+                            <span class="status-badge status-idle" style="text-transform: none;">${nodeCount} node${nodeCount !== 1 ? 's' : ''}</span>
+                        </td>
+                        <td style="text-align: right;">
+                            <div class="action-group" style="justify-content: flex-end;">
+                                <button class="btn btn-secondary btn-sm" onclick="editPipeline('${p.id}')">Edit</button>
+                                <button class="btn btn-primary btn-sm" onclick="runPipeline('${p.id}')">Run</button>
+                                <button class="btn btn-danger btn-sm" onclick="deletePipeline('${p.id}')">Delete</button>
+                            </div>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function filterPipelines() {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const rows = document.querySelectorAll('#pipelines-table-body tr');
+            
+            rows.forEach(row => {
+                const name = row.getAttribute('data-name') || '';
+                const desc = row.getAttribute('data-desc') || '';
+                row.style.display = (name.includes(query) || desc.includes(query)) ? '' : 'none';
+            });
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function editPipeline(id) {
+            window.location.href = `/builder?pipeline=${id}`;
+        }
+
+        async function runPipeline(id) {
+            const userInput = prompt('Enter input for this pipeline:', 'Hello');
+            if (!userInput) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/pipelines/${id}/execute`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ input: userInput })
+                });
+
+                if (!response.ok) throw new Error('Failed to start execution');
+
+                const execution = await response.json();
+                window.location.href = `/executions/${execution.id}/view`;
+            } catch (error) {
+                alert('Failed to run pipeline: ' + error.message);
+            }
+        }
+
+        async function deletePipeline(id) {
+            if (!confirm('Are you sure you want to delete this pipeline?')) return;
+
+            try {
+                const response = await fetch(`${API_BASE}/api/pipelines/${id}`, { method: 'DELETE' });
+                if (!response.ok) throw new Error('Failed to delete');
+                loadPipelines();
+            } catch (error) {
+                alert('Failed to delete: ' + error.message);
+            }
+        }
+    </script>
+</body>
+</html>

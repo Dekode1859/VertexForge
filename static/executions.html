@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Execution History - VertexForge OSS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/" class="nav-brand">VertexForge <span style="color: var(--text-secondary); font-weight: 400;">OSS</span></a>
+        <div class="nav-links">
+            <a href="/builder" class="nav-link">Builder</a>
+            <a href="/pipelines" class="nav-link">Pipelines</a>
+            <a href="/executions" class="nav-link active">Executions</a>
+        </div>
+    </nav>
+
+    <div class="page">
+        <div class="page-header">
+            <h1>Execution History</h1>
+            <p>View all pipeline runs and their results</p>
+        </div>
+
+        <div class="search-bar">
+            <input type="text" id="search-input" placeholder="Filter by pipeline name or status..." oninput="filterExecutions()">
+            <select id="status-filter" onchange="filterExecutions()" style="width: auto;">
+                <option value="">All Status</option>
+                <option value="completed">Completed</option>
+                <option value="running">Running</option>
+                <option value="failed">Failed</option>
+            </select>
+            <a href="/builder" class="btn btn-primary">+ New Execution</a>
+        </div>
+
+        <div class="card">
+            <div class="card-header">
+                <h2><span class="icon">&#9200;</span> All Executions</h2>
+                <span id="execution-count" class="status-badge status-idle" style="text-transform: none;">Loading...</span>
+            </div>
+            <div class="card-body" style="padding: 0;">
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>ID</th>
+                            <th>Pipeline</th>
+                            <th>Input Preview</th>
+                            <th>Status</th>
+                            <th>Started</th>
+                            <th style="text-align: right;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody id="executions-table-body">
+                        <tr>
+                            <td colspan="6">
+                                <div class="log-loading">
+                                    <div class="spinner"></div>
+                                    Loading executions...
+                                </div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        let allExecutions = [];
+
+        document.addEventListener('DOMContentLoaded', loadExecutions);
+
+        async function loadExecutions() {
+            try {
+                const response = await fetch(`${API_BASE}/api/executions`);
+                allExecutions = await response.json();
+                renderExecutions(allExecutions);
+            } catch (error) {
+                console.error('Failed to load executions:', error);
+                document.getElementById('executions-table-body').innerHTML = `
+                    <tr><td colspan="6" style="text-align: center; padding: 40px; color: var(--text-muted);">
+                        Failed to load executions. <a href="#" onclick="loadExecutions()">Retry</a>
+                    </td></tr>
+                `;
+            }
+        }
+
+        function renderExecutions(executions) {
+            const tbody = document.getElementById('executions-table-body');
+            const countEl = document.getElementById('execution-count');
+            
+            countEl.textContent = `${executions.length} execution${executions.length !== 1 ? 's' : ''}`;
+
+            if (!executions || executions.length === 0) {
+                tbody.innerHTML = `
+                    <tr><td colspan="6" style="text-align: center; padding: 60px; color: var(--text-muted);">
+                        <div style="font-size: 24px; margin-bottom: 12px;">&#9200;</div>
+                        <p>No executions yet.</p>
+                        <a href="/builder" class="btn btn-primary" style="margin-top: 16px;">Run a Pipeline</a>
+                    </td></tr>
+                `;
+                return;
+            }
+
+            tbody.innerHTML = executions.map(e => {
+                const statusClass = e.status === 'completed' ? 'status-complete' : 
+                                   e.status === 'running' ? 'status-running' : 'status-error';
+                const statusLabel = e.status.charAt(0).toUpperCase() + e.status.slice(1);
+                const inputPreview = e.input ? (e.input.length > 60 ? e.input.substring(0, 60) + '...' : e.input) : 'N/A';
+                const startedDate = new Date(e.started_at).toLocaleDateString();
+                const startedTime = new Date(e.started_at).toLocaleTimeString();
+                
+                return `
+                    <tr data-pipeline="${escapeHtml(e.pipeline_name.toLowerCase())}" data-status="${e.status}">
+                        <td>
+                            <div class="pipeline-name">${escapeHtml(e.id.substring(0, 8))}...</div>
+                        </td>
+                        <td>
+                            <div class="pipeline-name">${escapeHtml(e.pipeline_name)}</div>
+                        </td>
+                        <td>
+                            <div class="pipeline-desc" title="${escapeHtml(e.input || '')}">${escapeHtml(inputPreview)}</div>
+                        </td>
+                        <td>
+                            <span class="status-badge ${statusClass}">${statusLabel}</span>
+                        </td>
+                        <td>
+                            <div>${startedDate}</div>
+                            <div class="pipeline-date">${startedTime}</div>
+                        </td>
+                        <td style="text-align: right;">
+                            <a href="/executions/${e.id}/view" class="btn btn-secondary btn-sm">View Logs</a>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function filterExecutions() {
+            const query = document.getElementById('search-input').value.toLowerCase();
+            const statusFilter = document.getElementById('status-filter').value;
+            const rows = document.querySelectorAll('#executions-table-body tr');
+            
+            rows.forEach(row => {
+                const pipeline = row.getAttribute('data-pipeline') || '';
+                const status = row.getAttribute('data-status') || '';
+                const matchesQuery = pipeline.includes(query);
+                const matchesStatus = !statusFilter || status === statusFilter;
+                row.style.display = (matchesQuery && matchesStatus) ? '' : 'none';
+            });
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+{
+  "graph_name": "research_pipeline",
+  "version": "1.0.0",
+  "description": "Extract entities from input, research them, then summarize findings",
+  "state": {
+    "fields": [
+      {
+        "name": "messages",
+        "type": "List[BaseMessage]",
+        "reducer": "operator.add"
+      },
+      {
+        "name": "current_node",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "iteration_count",
+        "type": "int",
+        "default": 0
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "node_id": "extractor",
+      "model": "kimi-k2.5",
+      "system_prompt": "You are an entity extractor. Your task is to:\n1. Identify key topics, entities, and concepts in the user's input\n2. List them clearly and concisely\n3. Output only the extracted entities, nothing else\n\nInput:",
+      "temperature": 0.0,
+      "tools": []
+    },
+    {
+      "node_id": "researcher",
+      "model": "kimi-k2.5",
+      "system_prompt": "You are a research analyst. Your task is to:\n1. Take the extracted entities provided\n2. Provide brief analysis and insights about them\n3. Suggest interesting connections or patterns\n\nBe concise but insightful.",
+      "temperature": 0.7,
+      "tools": []
+    },
+    {
+      "node_id": "summarizer",
+      "model": "kimi-k2.5",
+      "system_prompt": "You are a summarizer. Your task is to:\n1. Review the entire conversation history\n2. Create a concise summary of key points\n3. Format as bullet points\n\nBe brief and clear.",
+      "temperature": 0.2,
+      "tools": []
+    }
+  ],
+  "edges": [
+    {
+      "from": "START",
+      "to": "extractor"
+    },
+    {
+      "from": "extractor",
+      "to": "researcher"
+    },
+    {
+      "from": "researcher",
+      "to": "summarizer"
+    },
+    {
+      "from": "summarizer",
+      "to": "END"
+    }
+  ],
+  "entry_point": "START"
+}

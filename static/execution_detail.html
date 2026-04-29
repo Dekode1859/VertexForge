@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Execution Detail - VertexForge OSS</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+    <nav class="top-nav">
+        <a href="/" class="nav-brand">VertexForge <span style="color: var(--text-secondary); font-weight: 400;">OSS</span></a>
+        <div class="nav-links">
+            <a href="/builder" class="nav-link">Builder</a>
+            <a href="/pipelines" class="nav-link">Pipelines</a>
+            <a href="/executions" class="nav-link">Executions</a>
+        </div>
+    </nav>
+
+    <div class="execution-panel">
+        <div class="execution-header">
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <a href="/executions" class="btn btn-secondary btn-sm" style="padding: 4px 10px;">&#8592; Back</a>
+                <h3><span class="status-dot" id="status-dot" style="background: #6B7280;"></span> <span id="execution-title">Execution</span></h3>
+            </div>
+            <div style="display: flex; align-items: center; gap: 12px;">
+                <span id="execution-id" style="font-family: var(--font-mono); font-size: 12px; color: var(--text-muted);"></span>
+                <span class="status-badge status-idle" id="execution-status-badge">Idle</span>
+            </div>
+        </div>
+        
+        <div style="display: flex; border-bottom: 1px solid var(--border); background: var(--bg-card);">
+            <div style="padding: 12px 24px; border-right: 1px solid var(--border);">
+                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;">Pipeline</span>
+                <div id="pipeline-name" style="font-weight: 500; margin-top: 2px;">-</div>
+            </div>
+            <div style="padding: 12px 24px; border-right: 1px solid var(--border);">
+                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;">Input</span>
+                <div id="execution-input" style="font-weight: 500; margin-top: 2px; max-width: 400px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">-</div>
+            </div>
+            <div style="padding: 12px 24px;">
+                <span style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em;">Started</span>
+                <div id="execution-time" style="font-weight: 500; margin-top: 2px;">-</div>
+            </div>
+        </div>
+
+        <div class="execution-log" id="results-content">
+            <div class="log-loading">
+                <div class="spinner"></div>
+                Connecting to execution stream...
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API_BASE = window.location.origin;
+        // URL pattern: /executions/{id}/view
+        const pathParts = window.location.pathname.split('/').filter(Boolean);
+        const executionId = pathParts.length >= 2 ? pathParts[1] : null;
+        let ws = null;
+
+        document.addEventListener('DOMContentLoaded', loadExecution);
+
+        async function loadExecution() {
+            if (!executionId) {
+                document.getElementById('results-content').innerHTML = `
+                    <div class="log-empty">
+                        <div class="log-empty-icon">&#10067;</div>
+                        <p>No execution ID provided</p>
+                    </div>
+                `;
+                return;
+            }
+
+            document.getElementById('execution-id').textContent = executionId.substring(0, 8);
+
+            try {
+                // First load existing execution data
+                const response = await fetch(`${API_BASE}/api/executions/${executionId}`);
+                if (!response.ok) throw new Error('Execution not found');
+                
+                const execution = await response.json();
+                updateExecutionInfo(execution);
+
+                // If running, connect WebSocket; if completed/failed, show results
+                if (execution.status === 'running') {
+                    connectWebSocket();
+                } else {
+                    renderCompletedExecution(execution);
+                }
+            } catch (error) {
+                document.getElementById('results-content').innerHTML = `
+                    <div class="log-empty">
+                        <div class="log-empty-icon">&#10060;</div>
+                        <p>Failed to load execution: ${error.message}</p>
+                    </div>
+                `;
+            }
+        }
+
+        function updateExecutionInfo(execution) {
+            document.getElementById('execution-title').textContent = 'Execution Log';
+            if (execution.pipeline_name) {
+                document.getElementById('pipeline-name').textContent = execution.pipeline_name;
+            }
+            if (execution.input) {
+                const inputPreview = execution.input.length > 100 ? 
+                    execution.input.substring(0, 100) + '...' : execution.input;
+                document.getElementById('execution-input').textContent = inputPreview;
+                document.getElementById('execution-input').title = execution.input;
+            }
+            if (execution.started_at) {
+                document.getElementById('execution-time').textContent = new Date(execution.started_at).toLocaleString();
+            }
+
+            setExecutionStatus(execution.status);
+        }
+
+        function renderCompletedExecution(execution) {
+            const resultsContent = document.getElementById('results-content');
+            
+            if (execution.error_message) {
+                resultsContent.innerHTML = createStepCard({
+                    icon: '&#10007;',
+                    iconClass: 'error',
+                    title: 'Execution Failed',
+                    body: escapeHtml(execution.error_message)
+                });
+                return;
+            }
+
+            let html = '';
+            
+            // Node outputs
+            if (execution.node_outputs && execution.node_outputs.length > 0) {
+                html += `<div style="margin-bottom: 20px;">`;
+                html += `<div style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 12px;">Tool Calls</div>`;
+                execution.node_outputs.forEach((output, i) => {
+                    html += `
+                        <div class="tool-card success">
+                            <div class="tool-header">
+                                <div class="tool-icon success">&#10003;</div>
+                                <span class="tool-name">${escapeHtml(output.tool || 'Unknown')}</span>
+                                <span class="tool-status-label success">Completed</span>
+                            </div>
+                            <div class="tool-body">
+                                <div class="tool-param">
+                                    <div class="tool-param-label">Output</div>
+                                    <div class="tool-param-value mono">${formatJson(output.output)}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += `</div>`;
+            }
+
+            // Final output
+            if (execution.final_output) {
+                html += `
+                    <div class="final-output-card">
+                        <div class="final-header">
+                            <div class="final-title">&#10003; Final Output</div>
+                            <div class="final-meta">${execution.completed_at ? new Date(execution.completed_at).toLocaleString() : ''}</div>
+                        </div>
+                        <div class="final-body">${formatOutput(execution.final_output)}</div>
+                    </div>
+                `;
+            }
+
+            resultsContent.innerHTML = html || '<div class="log-empty"><p>No output available</p></div>';
+        }
+
+        let pollInterval = null;
+
+        function connectWebSocket() {
+            const resultsContent = document.getElementById('results-content');
+            setExecutionStatus('running');
+            
+            // Show loading state
+            resultsContent.innerHTML = `
+                <div class="log-loading">
+                    <div class="spinner"></div>
+                    Connecting to execution stream...
+                </div>
+            `;
+
+            const wsUrl = `ws://${window.location.host}/ws/execute/${executionId}`;
+            ws = new WebSocket(wsUrl);
+            let connected = false;
+
+            ws.onopen = function() {
+                console.log('WebSocket connected');
+                connected = true;
+                resultsContent.innerHTML = ''; // Clear loading
+                if (pollInterval) {
+                    clearInterval(pollInterval);
+                    pollInterval = null;
+                }
+            };
+
+            ws.onmessage = function(event) {
+                const data = JSON.parse(event.data);
+                handleWebSocketMessage(data);
+            };
+
+            ws.onerror = function(error) {
+                console.error('WebSocket error:', error);
+                if (!connected) {
+                    // WebSocket failed to connect - execution might be running from another session
+                    // Fall back to polling
+                    resultsContent.innerHTML = `
+                        <div class="log-loading">
+                            <div class="spinner"></div>
+                            Execution is running. Polling for updates...
+                        </div>
+                    `;
+                    startPolling();
+                } else {
+                    setExecutionStatus('error');
+                    resultsContent.innerHTML += createStepCard({
+                        icon: '&#10007;',
+                        iconClass: 'error',
+                        title: 'Connection Error',
+                        body: 'WebSocket connection lost'
+                    });
+                }
+            };
+
+            ws.onclose = function() {
+                console.log('WebSocket closed');
+                if (!connected) {
+                    // Never connected - start polling
+                    startPolling();
+                }
+            };
+        }
+
+        function startPolling() {
+            if (pollInterval) return;
+            
+            let lastStatus = 'running';
+            pollInterval = setInterval(async () => {
+                try {
+                    const response = await fetch(`${API_BASE}/api/executions/${executionId}`);
+                    if (!response.ok) return;
+                    
+                    const execution = await response.json();
+                    
+                    // Update status display
+                    if (execution.status !== lastStatus) {
+                        lastStatus = execution.status;
+                        setExecutionStatus(execution.status);
+                    }
+                    
+                    // If completed or failed, stop polling and render results
+                    if (execution.status === 'completed' || execution.status === 'failed') {
+                        clearInterval(pollInterval);
+                        pollInterval = null;
+                        
+                        if (ws) {
+                            ws.close();
+                            ws = null;
+                        }
+                        
+                        renderCompletedExecution(execution);
+                    }
+                    // Still running - show a heartbeat
+                    else if (execution.status === 'running') {
+                        const resultsContent = document.getElementById('results-content');
+                        if (resultsContent.querySelector('.log-loading')) {
+                            resultsContent.innerHTML = `
+                                <div class="log-loading">
+                                    <div class="spinner"></div>
+                                    Execution is running... (last checked: ${new Date().toLocaleTimeString()})
+                                </div>
+                            `;
+                        }
+                    }
+                } catch (error) {
+                    console.error('Poll error:', error);
+                }
+            }, 2000); // Poll every 2 seconds
+        }
+
+        function setExecutionStatus(status) {
+            const badge = document.getElementById('execution-status-badge');
+            const dot = document.getElementById('status-dot');
+
+            const statusClasses = {
+                'running': 'status-running',
+                'completed': 'status-complete',
+                'failed': 'status-error'
+            };
+            
+            const statusLabels = {
+                'running': 'Running',
+                'completed': 'Completed',
+                'failed': 'Failed'
+            };
+
+            badge.className = 'status-badge ' + (statusClasses[status] || 'status-idle');
+            badge.textContent = statusLabels[status] || status;
+
+            if (status === 'running') {
+                dot.style.background = 'var(--accent-blue)';
+                dot.style.animation = 'pulse-dot 1.5s ease-in-out infinite';
+            } else if (status === 'completed') {
+                dot.style.background = 'var(--accent-green)';
+                dot.style.animation = 'none';
+            } else if (status === 'failed' || status === 'error') {
+                dot.style.background = 'var(--accent-red)';
+                dot.style.animation = 'none';
+            } else {
+                dot.style.background = '#6B7280';
+                dot.style.animation = 'none';
+            }
+        }
+
+        function handleWebSocketMessage(data) {
+            const resultsContent = document.getElementById('results-content');
+
+            switch (data.type) {
+                case 'execution_start':
+                    resultsContent.innerHTML += createStepCard({
+                        icon: '&#9654;',
+                        iconClass: 'info',
+                        title: 'Execution Started',
+                        meta: escapeHtml(data.pipeline_name),
+                        body: 'Pipeline initialized and running...'
+                    });
+                    if (data.pipeline_name) {
+                        document.getElementById('pipeline-name').textContent = data.pipeline_name;
+                    }
+                    break;
+
+                case 'tool_call_start':
+                    resultsContent.innerHTML += `
+                        <div class="tool-card running" id="tool-${data.tool}-${Date.now()}">
+                            <div class="tool-header">
+                                <div class="tool-icon running">&#9881;</div>
+                                <span class="tool-name">${escapeHtml(data.tool)}</span>
+                                <span class="tool-status-label running">Running</span>
+                            </div>
+                            <div class="tool-body">
+                                <div class="tool-param">
+                                    <div class="tool-param-label">Input</div>
+                                    <div class="tool-param-value mono">${formatJson(data.input)}</div>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'tool_call_end':
+                    // Find and update the running tool card
+                    const runningCards = Array.from(resultsContent.querySelectorAll('.tool-card.running'));
+                    const targetCard = runningCards.reverse().find(card => {
+                        const nameEl = card.querySelector('.tool-name');
+                        return nameEl && nameEl.textContent.trim() === data.tool;
+                    });
+
+                    if (targetCard) {
+                        const hasError = !!data.error;
+                        targetCard.className = `tool-card ${hasError ? 'error' : 'success'}`;
+                        targetCard.innerHTML = `
+                            <div class="tool-header">
+                                <div class="tool-icon ${hasError ? 'error' : 'success'}">${hasError ? '&#10007;' : '&#10003;'}</div>
+                                <span class="tool-name">${escapeHtml(data.tool)}</span>
+                                <span class="tool-status-label ${hasError ? 'error' : 'success'}">${hasError ? 'Failed' : 'Completed'}</span>
+                            </div>
+                            <div class="tool-body">
+                                <div class="tool-param">
+                                    <div class="tool-param-label">Output</div>
+                                    <div class="tool-param-value mono">${formatJson(data.output || data.error)}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    break;
+
+                case 'complete':
+                    setExecutionStatus('completed');
+                    resultsContent.innerHTML += `
+                        <div class="final-output-card">
+                            <div class="final-header">
+                                <div class="final-title">&#10003; Final Output</div>
+                                <div class="final-meta">${data.total_duration_ms || 0}ms</div>
+                            </div>
+                            <div class="final-body">${formatOutput(data.final_output)}</div>
+                        </div>
+                    `;
+                    break;
+
+                case 'error':
+                    setExecutionStatus('error');
+                    resultsContent.innerHTML += createStepCard({
+                        icon: '&#10007;',
+                        iconClass: 'error',
+                        title: 'Execution Failed',
+                        body: escapeHtml(data.message)
+                    });
+                    break;
+            }
+
+            resultsContent.scrollTop = resultsContent.scrollHeight;
+        }
+
+        function createStepCard({ icon, iconClass, title, meta, body }) {
+            const metaHtml = meta ? `<div class="step-meta">${escapeHtml(meta)}</div>` : '';
+            return `
+                <div class="step-card">
+                    <div class="step-header-bar">
+                        <div class="step-icon ${iconClass || 'info'}">${icon}</div>
+                        <div class="step-title">${escapeHtml(title)}</div>
+                        ${metaHtml}
+                    </div>
+                    ${body ? `<div class="step-body">${body}</div>` : ''}
+                </div>
+            `;
+        }
+
+        function formatJson(val) {
+            if (val === undefined || val === null) return 'N/A';
+            if (typeof val === 'string') {
+                if (val.length > 500) {
+                    return escapeHtml(val.substring(0, 500)) + '... (truncated)';
+                }
+                return escapeHtml(val);
+            }
+            if (typeof val === 'object') {
+                try {
+                    return escapeHtml(JSON.stringify(val, null, 2));
+                } catch (e) {
+                    return escapeHtml(String(val));
+                }
+            }
+            return escapeHtml(String(val));
+        }
+
+        function escapeHtml(text) {
+            if (text === undefined || text === null) return '';
+            const div = document.createElement('div');
+            div.textContent = String(text);
+            return div.innerHTML;
+        }
+
+        function formatOutput(text) {
+            if (!text) return '';
+            return escapeHtml(text).replace(/\n/g, '<br>');
+        }
+    </script>
+</body>
+</html>
