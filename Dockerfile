@@ -9,11 +9,12 @@ RUN pip install uv
 COPY pyproject.toml uv.lock ./
 COPY README.md ./
 COPY api.py compiler.py schema.py tools.py ./
+COPY scripts/ ./scripts/
 COPY form.html ./
 COPY static/ ./static/
 
-# Install dependencies using UV
-RUN uv pip install --system -e .
+# Install dependencies from the lockfile
+RUN uv sync --locked --no-dev
 
 # Create data directory
 RUN mkdir -p data

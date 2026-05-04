@@ -9,17 +9,20 @@ Define multi-agent systems in JSON, compile them to LangGraph at runtime. Change
 ```bash
 # 1. Set up environment
 cp .env.example .env          # Add your OLLAMA_API_KEY
-uv pip install -e .           # Install dependencies
+uv sync --python 3.11 --extra dev
 
-# 2. Run the hardcoded baseline
-python baseline_script.py
+# 2. Verify the active runtime
+uv run python scripts/verify_runtime.py
 
-# 3. Compile a graph from JSON
-python compiler.py config.json
+# 3. Run the hardcoded baseline
+uv run python baseline_script.py
 
-# 4. Run validation tests
-python test_baseline.py        # Test LLM connection + agents
-python test_swap.py            # Test bidirectional translation
+# 4. Compile a graph from JSON
+uv run python compiler.py config.json
+
+# 5. Run validation scripts
+uv run python test_baseline.py
+uv run python test_swap.py
 ```
 
 ## Usage

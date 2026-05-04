@@ -41,9 +41,9 @@ if phoenix_endpoint:
             project_name=os.getenv("PHOENIX_PROJECT_NAME", "vertexforge"),
         )
         LangChainInstrumentor().instrument(tracer_provider=tracer_provider)
-        print(f"✓ Phoenix tracing enabled: {phoenix_endpoint}")
+        print(f"[OK] Phoenix tracing enabled: {phoenix_endpoint}")
     except Exception as e:
-        print(f"⚠ Phoenix tracing not enabled: {e}")
+        print(f"[WARN] Phoenix tracing not enabled: {e}")
 
 # Database setup
 DB_PATH = Path("data/vertexforge.db")
