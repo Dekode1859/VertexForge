@@ -26,7 +26,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from compiler import GraphBuilder
-from schema import GraphConfig, load_config
+from schema import GraphConfig
 from langchain_core.messages import HumanMessage
 
 # Phoenix Observability - setup tracing before any LangChain/LangGraph imports
@@ -111,16 +111,11 @@ async def run_pipeline_execution(execution_id: str):
         if not pipeline:
             return
         
-        # Load and compile graph
-        config_path = f"/tmp/{execution_id}_config.json"
-        with open(config_path, "w") as f:
-            json.dump(json.loads(pipeline["config_json"]), f)
-        
         try:
-            builder = GraphBuilder(config_path)
+            config = GraphConfig.model_validate(json.loads(pipeline["config_json"]))
+            builder = GraphBuilder(config)
             graph = builder.build()
         except Exception as e:
-            Path(config_path).unlink(missing_ok=True)
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             cursor.execute(
@@ -130,8 +125,6 @@ async def run_pipeline_execution(execution_id: str):
             conn.commit()
             conn.close()
             return
-        finally:
-            Path(config_path).unlink(missing_ok=True)
         
         # Track execution
         start_time = datetime.now()
@@ -314,10 +307,10 @@ async def execution_detail_page(execution_id: str):
 async def create_pipeline(pipeline: PipelineCreate):
     """Create a new pipeline configuration."""
     pipeline_id = str(uuid.uuid4())
-    
-    # Validate config
+
     try:
         config_obj = GraphConfig.model_validate(pipeline.config)
+        GraphBuilder(config_obj).build()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid config: {str(e)}")
     
@@ -577,19 +570,13 @@ async def websocket_execute(websocket: WebSocket, execution_id: str):
             await safe_send({"type": "error", "message": "Pipeline not found"})
             return
         
-        # Load and compile graph
-        config_path = f"/tmp/{execution_id}_config.json"
-        with open(config_path, "w") as f:
-            json.dump(json.loads(pipeline["config_json"]), f)
-        
         try:
-            builder = GraphBuilder(config_path)
+            config = GraphConfig.model_validate(json.loads(pipeline["config_json"]))
+            builder = GraphBuilder(config)
             graph = builder.build()
         except Exception as e:
             await safe_send({"type": "error", "message": f"Compilation error: {str(e)}"})
             return
-        finally:
-            Path(config_path).unlink(missing_ok=True)
         
         # Prepare initial state
         user_input = execution["input"]

@@ -7,11 +7,10 @@ This is the "compiler" that proves bidirectional translation:
 Uses create_react_agent for tool-equipped nodes, plain LLM for others.
 """
 
-import json
 import operator
 import os
 import sys
-from typing import TypedDict, Annotated, Sequence, Dict, Any, Callable, List, Optional
+from typing import TypedDict, Annotated, Sequence, Dict, Any, Callable, List, Optional, Union
 from types import new_class
 
 from dotenv import load_dotenv
@@ -20,7 +19,7 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import create_react_agent
 
-from schema import GraphConfig, NodeConfig, EdgeConfig, load_config
+from schema import GraphConfig, NodeConfig, load_config
 from tools import (
     RESEARCH_TOOLS, MATH_TOOLS, FILE_TOOLS, TEXT_TOOLS,
     ALL_TOOLS, web_search, get_current_date, calculate,
@@ -178,7 +177,11 @@ def _resolve_tools(tool_names: List[str]) -> List[Callable]:
     return unique
 
 
-def _create_llm(model: str, temperature: float = 0.7) -> ChatOllama:
+def _create_llm(
+    model: str,
+    temperature: float = 0.7,
+    max_tokens: Optional[int] = None,
+) -> ChatOllama:
     """Create an Ollama LLM client with Cloud auth headers.
 
     Args:
@@ -192,6 +195,9 @@ def _create_llm(model: str, temperature: float = 0.7) -> ChatOllama:
         "model": model,
         "temperature": temperature,
     }
+
+    if max_tokens is not None:
+        kwargs["num_predict"] = max_tokens
 
     # Add cloud auth if API key is configured
     if OLLAMA_API_KEY:
@@ -222,7 +228,11 @@ def create_node_function(node_config: NodeConfig) -> Callable:
     # --- Tool-equipped agent via create_react_agent ---
     if node_config.tools:
         resolved_tools = _resolve_tools(node_config.tools)
-        llm = _create_llm(node_config.model, node_config.temperature)
+        llm = _create_llm(
+            node_config.model,
+            node_config.temperature,
+            node_config.max_tokens,
+        )
 
         agent = create_react_agent(
             model=llm,
@@ -263,7 +273,11 @@ def create_node_function(node_config: NodeConfig) -> Callable:
             """Plain LLM agent node."""
             print(f"\n[{node_config.node_id.upper()}] Processing...")
 
-            llm = _create_llm(node_config.model, node_config.temperature)
+            llm = _create_llm(
+                node_config.model,
+                node_config.temperature,
+                node_config.max_tokens,
+            )
 
             # Get input (last message)
             messages_list = state.get("messages", [])
@@ -308,19 +322,36 @@ class GraphBuilder:
         result = app.invoke({"messages": [HumanMessage(content="Hello")]})
     """
 
-    def __init__(self, config_path: str):
-        """Initialize builder from a JSON config file path.
+    def __init__(self, config_source: Union[str, GraphConfig]):
+        """Initialize builder from a JSON config file path or validated config.
 
         Args:
-            config_path: Path to a JSON file matching the GraphConfig schema.
+            config_source: Path to a JSON file or a validated GraphConfig object.
 
         Raises:
             FileNotFoundError: If config_path doesn't exist.
             pydantic.ValidationError: If JSON doesn't match schema.
         """
-        self.config = load_config(config_path)
+        if isinstance(config_source, GraphConfig):
+            self.config = config_source
+            self.config_path: Optional[str] = None
+        else:
+            self.config = load_config(config_source)
+            self.config_path = config_source
         self.state_class = create_state_class(self.config)
         self.node_functions: Dict[str, Callable] = {}
+        self.entry_node = self._resolve_entry_node()
+
+    def _resolve_entry_node(self) -> str:
+        """Resolve the actual starting node for execution."""
+        if self.config.entry_point != "START":
+            return self.config.entry_point
+
+        for edge in self.config.edges:
+            if edge.from_node == "START":
+                return edge.to_node
+
+        raise ValueError("No START edge found for graph entry point resolution.")
 
     def _validate_structure(self) -> None:
         """Validate structural integrity of the graph configuration.
@@ -361,11 +392,9 @@ class GraphBuilder:
                 referenced_nodes.add(from_node)
                 referenced_nodes.add(to_node)
 
-        # Check: exactly one START edge
-        if not start_edges:
+        # Check: entry point resolves correctly
+        if self.config.entry_point == "START" and not start_edges:
             raise ValueError("No entry point defined. Add an edge from START to a node.")
-        if len(start_edges) > 1:
-            raise ValueError(f"Multiple entry points defined: {start_edges}. Only one START edge is allowed.")
 
         # Check: all referenced nodes exist
         for node_ref in referenced_nodes:
@@ -375,7 +404,7 @@ class GraphBuilder:
         # Check: all nodes are reachable from START (no orphans)
         # Simple reachability via edges
         reachable = set()
-        frontier = {start_edges[0]}
+        frontier = {self.entry_node}
         edge_map: Dict[str, List[str]] = {n.node_id: [] for n in self.config.nodes}
 
         for edge in self.config.edges:
@@ -426,8 +455,7 @@ class GraphBuilder:
             to_node = edge_cfg.to_node
 
             if from_node == "START":
-                workflow.set_entry_point(to_node)
-                print(f"  -> Entry point: {to_node}")
+                continue
             elif to_node == "END":
                 workflow.add_edge(from_node, END)
                 print(f"  -> Edge: {from_node} -> END")
@@ -465,6 +493,9 @@ class GraphBuilder:
 
         # Create workflow with dynamic state
         workflow = StateGraph(self.state_class)
+
+        workflow.set_entry_point(self.entry_node)
+        print(f"  -> Entry point: {self.entry_node}")
 
         # Build nodes
         self._build_nodes(workflow)

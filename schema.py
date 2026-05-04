@@ -4,7 +4,7 @@ This defines the structure that compiler.py will consume.
 """
 
 from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============================================================================
@@ -45,6 +45,13 @@ class NodeConfig(BaseModel):
         default=None,
         description="Maximum tokens to generate (None = model default)"
     )
+
+    @model_validator(mode="after")
+    def validate_node(self) -> "NodeConfig":
+        if self.max_tokens is not None and self.max_tokens <= 0:
+            raise ValueError("max_tokens must be greater than 0 when provided")
+
+        return self
 
 
 # ============================================================================
@@ -180,6 +187,83 @@ class GraphConfig(BaseModel):
                 ]
             }
         }
+
+    @model_validator(mode="after")
+    def validate_graph(self) -> "GraphConfig":
+        node_ids = [node.node_id for node in self.nodes]
+        unique_node_ids = set(node_ids)
+
+        if len(unique_node_ids) != len(node_ids):
+            duplicates = sorted({node_id for node_id in node_ids if node_ids.count(node_id) > 1})
+            raise ValueError(f"Duplicate node IDs are not allowed: {duplicates}")
+
+        for edge in self.edges:
+            if edge.condition is not None:
+                raise ValueError(
+                    "Conditional edges are not supported yet. "
+                    f"Remove condition from edge {edge.from_node} -> {edge.to_node}."
+                )
+            if edge.to_node == "START":
+                raise ValueError("Edges cannot target START.")
+            if edge.from_node == "END":
+                raise ValueError("Edges cannot originate from END.")
+
+        start_targets = [edge.to_node for edge in self.edges if edge.from_node == "START"]
+        if len(start_targets) > 1:
+            raise ValueError(
+                f"Multiple START edges defined: {start_targets}. Only one START edge is allowed."
+            )
+
+        if self.entry_point == "START":
+            if len(start_targets) != 1:
+                raise ValueError(
+                    "entry_point is START, so exactly one START edge is required."
+                )
+            actual_entry = start_targets[0]
+        else:
+            if self.entry_point not in unique_node_ids:
+                raise ValueError(
+                    f"entry_point '{self.entry_point}' is not a valid node ID. "
+                    f"Available nodes: {sorted(unique_node_ids)}"
+                )
+            if start_targets and start_targets[0] != self.entry_point:
+                raise ValueError(
+                    f"entry_point '{self.entry_point}' conflicts with START edge to '{start_targets[0]}'."
+                )
+            actual_entry = self.entry_point
+
+        referenced_nodes = set()
+        for edge in self.edges:
+            if edge.from_node not in {"START", "END"}:
+                referenced_nodes.add(edge.from_node)
+            if edge.to_node not in {"START", "END"}:
+                referenced_nodes.add(edge.to_node)
+
+        missing_nodes = sorted(referenced_nodes - unique_node_ids)
+        if missing_nodes:
+            raise ValueError(f"Edges reference undefined node IDs: {missing_nodes}")
+
+        edge_map: Dict[str, List[str]] = {node_id: [] for node_id in unique_node_ids}
+        for edge in self.edges:
+            if edge.from_node not in {"START", "END"} and edge.to_node not in {"START", "END"}:
+                edge_map[edge.from_node].append(edge.to_node)
+
+        reachable = set()
+        frontier = [actual_entry]
+        while frontier:
+            current = frontier.pop()
+            if current in reachable:
+                continue
+            reachable.add(current)
+            frontier.extend(edge_map.get(current, []))
+
+        orphaned_nodes = sorted(unique_node_ids - reachable)
+        if orphaned_nodes:
+            raise ValueError(
+                f"Nodes unreachable from the configured entry point '{actual_entry}': {orphaned_nodes}"
+            )
+
+        return self
 
 
 # ============================================================================
