@@ -4,7 +4,7 @@ This defines the structure that compiler.py will consume.
 """
 
 from typing import List, Optional, Dict, Any, Literal
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ============================================================================
@@ -78,8 +78,7 @@ class EdgeConfig(BaseModel):
         description="Optional condition expression for conditional routing"
     )
     
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 # ============================================================================
@@ -158,8 +157,8 @@ class GraphConfig(BaseModel):
         description="Node ID where execution begins"
     )
     
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "graph_name": "research_pipeline",
                 "version": "1.0.0",
@@ -187,6 +186,7 @@ class GraphConfig(BaseModel):
                 ]
             }
         }
+    )
 
     @model_validator(mode="after")
     def validate_graph(self) -> "GraphConfig":
