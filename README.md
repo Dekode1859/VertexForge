@@ -1,129 +1,53 @@
 # VertexForge
 
-JSON-to-LangGraph compiler with bidirectional translation.
+DSL-first JSON-to-LangGraph compiler for agentic workflows.
 
-Define multi-agent systems in JSON, compile them to LangGraph at runtime. Change behavior by editing JSON — no Python code changes required.
+The current focus is the core runtime: validated JSON graphs, explicit state schema, Phoenix-managed prompts, and Phoenix traces. The FastAPI/UI shell is parked until the DSL is solid.
 
 ## Quick Start
 
-```bash
-# 1. Set up environment
-cp .env.example .env          # Add your OLLAMA_API_KEY
-uv sync --python 3.11 --extra dev
-
-# 2. Verify the active runtime
-uv run python scripts/verify_runtime.py
-
-# 3. Run the hardcoded baseline
-uv run python baseline_script.py
-
-# 4. Compile a graph from JSON
-uv run python compiler.py config.json
-
-# 5. Run validation scripts
-uv run python test_baseline.py
-uv run python test_swap.py
+```powershell
+uv sync --extra dev
+uv run python scripts\verify_runtime.py
 ```
 
-## Usage
+Run the static parallel AWS decision example:
 
-### Compile a JSON config into a LangGraph
-
-```python
-from compiler import GraphBuilder
-
-builder = GraphBuilder("config.json")
-app = builder.build()
-
-from langchain_core.messages import HumanMessage
-result = app.invoke({
-    "messages": [HumanMessage(content="Analyze AI trends")],
-    "current_node": "START",
-    "iteration_count": 0
-})
-print(result["messages"][-1].content)
+```powershell
+uv run python scripts\run_pipeline.py examples\aws_service_decision_pipeline.json `
+  --state "pros_text=AWS Lambda scales automatically and reduces server operations." `
+  --state "cons_text=AWS Lambda has cold starts and limited execution duration." `
+  --show-state
 ```
 
-### Validate a JSON config against the schema
+The example expects Phoenix prompts named `pros_advisor`, `cons_advisor`, and `decision_critic` with tag `development`.
 
-```python
-from schema import load_config
+## Current DSL Rules
 
-config = load_config("config.json")     # Raises ValidationError if invalid
-print(config.graph_name)
-print([n.node_id for n in config.nodes])
-```
-
-### Modify behavior by editing JSON only
-
-```python
-import json
-
-with open("config.json") as f:
-    config = json.load(f)
-
-config["nodes"][0]["temperature"] = 0.95    # More creative
-config["nodes"][0]["system_prompt"] += "\nBe concise!"
-config["graph_name"] = "creative_pipeline"
-
-with open("config_creative.json", "w") as f:
-    json.dump(config, f, indent=2)
-
-# Then compile — no Python changes needed
-builder = GraphBuilder("config_creative.json")
-app = builder.build()
-```
-
-## Project Structure
-
-| File | Purpose |
-|------|---------|
-| `baseline_script.py` | Hardcoded multi-agent system (reference implementation) |
-| `tools.py` | Real tool definitions: web_search, calculate, file ops, text tools |
-| `schema.py` | Pydantic v2 models: `NodeConfig`, `EdgeConfig`, `GraphConfig` |
-| `compiler.py` | `GraphBuilder` — compiles JSON config to LangGraph StateGraph |
-| `config.json` | Sample JSON configuration for a research pipeline |
-| `config_swapped.json` | Auto-generated swapped config (from test_swap.py) |
-| `test_baseline.py` | Validates LLM connection, agents, and tools |
-| `test_swap.py` | Validates bidirectional translation (swap test) |
-
-## JSON Config Format
+- Graph data moves through explicit state fields only.
+- Nodes must declare `input_keys`.
+- Nodes must declare `output_key`.
+- Graphs must declare `final_output_key`.
+- System prompts live in Phoenix Prompt Hub and are referenced with `prompt_ref`.
+- Static parallel joins use multi-source edges, for example:
 
 ```json
 {
-  "graph_name": "research_pipeline",
-  "version": "1.0.0",
-  "nodes": [
-    {
-      "node_id": "researcher",
-      "model": "kimi-k2.5",
-      "system_prompt": "You are a research expert...",
-      "temperature": 0.0,
-      "tools": ["web_search", "get_current_date"]
-    }
-  ],
-  "edges": [
-    {"from": "START", "to": "researcher"},
-    {"from": "researcher", "to": "END"}
-  ]
+  "from": ["pros_advisor", "cons_advisor"],
+  "to": "decision_critic"
 }
 ```
 
-## Available Tools
+## Active Examples
 
-| Group | Tools |
-|-------|-------|
-| Research | `web_search`, `get_current_date`, `extract_urls` |
-| Math | `calculate`, `calculate_statistics` |
-| File | `read_file`, `list_directory`, `write_file` |
-| Text | `count_words` |
+| File | Purpose |
+|------|---------|
+| `examples/state_rewrite_pipeline.json` | Linear state handoff between LLM nodes |
+| `examples/aws_service_decision_pipeline.json` | Static parallel branch and join |
 
-Use group names (`RESEARCH_TOOLS`, `MATH_TOOLS`, `FILE_TOOLS`, `TEXT_TOOLS`, `ALL_TOOLS`) or individual tool names in config.
+## Test Loop
 
-## Technology Stack
+```powershell
+.\.venv\Scripts\python.exe -m pytest
+```
 
-- **Language:** Python 3.11+
-- **Agent Framework:** LangGraph
-- **LLM:** Ollama Cloud + Kimi K2.5
-- **Schema Validation:** Pydantic v2
-- **Package Manager:** UV

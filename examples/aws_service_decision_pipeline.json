@@ -1,0 +1,112 @@
+{
+  "graph_name": "aws_service_decision_pipeline",
+  "version": "1.0.0",
+  "description": "Compare pros and cons for an AWS service through explicit state handoff, then synthesize usage guidance.",
+  "input_keys": [
+    "pros_text",
+    "cons_text"
+  ],
+  "final_output_key": "decision_guidance",
+  "state": {
+    "fields": [
+      {
+        "name": "iteration_count",
+        "type": "int",
+        "reducer": "operator.add",
+        "default": 0
+      },
+      {
+        "name": "pros_text",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "cons_text",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "when_to_use",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "when_not_to_use",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "decision_guidance",
+        "type": "str",
+        "default": ""
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "node_id": "pros_advisor",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "pros_advisor",
+        "tag": "development"
+      },
+      "temperature": 0.2,
+      "tools": [],
+      "input_keys": [
+        "pros_text"
+      ],
+      "output_key": "when_to_use"
+    },
+    {
+      "node_id": "cons_advisor",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "cons_advisor",
+        "tag": "development"
+      },
+      "temperature": 0.2,
+      "tools": [],
+      "input_keys": [
+        "cons_text"
+      ],
+      "output_key": "when_not_to_use"
+    },
+    {
+      "node_id": "decision_critic",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "decision_critic",
+        "tag": "development"
+      },
+      "temperature": 0.1,
+      "tools": [],
+      "input_keys": [
+        "when_to_use",
+        "when_not_to_use"
+      ],
+      "output_key": "decision_guidance"
+    }
+  ],
+  "edges": [
+    {
+      "from": "START",
+      "to": "pros_advisor"
+    },
+    {
+      "from": "START",
+      "to": "cons_advisor"
+    },
+    {
+      "from": [
+        "pros_advisor",
+        "cons_advisor"
+      ],
+      "to": "decision_critic"
+    },
+    {
+      "from": "decision_critic",
+      "to": "END"
+    }
+  ],
+  "entry_point": "START"
+}

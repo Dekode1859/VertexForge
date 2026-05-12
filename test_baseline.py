@@ -1,4 +1,4 @@
-"""
+﻿"""
 Non-interactive baseline test - runs automatically
 """
 
@@ -12,7 +12,7 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import create_react_agent
 
-from tools import RESEARCH_TOOLS, MATH_TOOLS
+from vertexforge.tools import RESEARCH_TOOLS, MATH_TOOLS
 
 load_dotenv()
 
@@ -108,3 +108,4 @@ print("  [OK] Kimi K2.5 model access")
 print("  [OK] Math agent with calculation tools")
 print("  [OK] Research agent with web search tools")
 print("\nReady to proceed to Phase 2: Schema Definition")
+

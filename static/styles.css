@@ -104,6 +104,56 @@ html, body {
     color: var(--text-accent);
 }
 
+.artifact-stack {
+    display: grid;
+    gap: 14px;
+}
+
+.artifact-card {
+    border: 1px solid var(--border);
+    background: var(--bg-surface);
+    border-radius: 10px;
+    padding: 16px;
+}
+
+.artifact-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.artifact-warnings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.warning-pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: rgba(249, 115, 22, 0.12);
+    color: var(--accent-orange);
+    border: 1px solid rgba(249, 115, 22, 0.22);
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.artifact-json {
+    margin: 0;
+    padding: 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg-input);
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-x: auto;
+}
+
 /* Page Layout */
 .page {
     max-width: 1400px;

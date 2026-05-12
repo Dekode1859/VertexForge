@@ -1,6 +1,6 @@
-"""
+﻿"""
 Phase 4 Validation: Prove bidirectional translation works
-Change JSON → behavior changes without touching Python
+Change JSON â†’ behavior changes without touching Python
 """
 
 import json
@@ -21,7 +21,7 @@ print("=" * 70)
 # ============================================================================
 print("\n[TEST 1] Validating JSON schema...")
 
-from schema import load_config, GraphConfig
+from vertexforge.schema import load_config, GraphConfig
 
 try:
     config = load_config("config.json")
@@ -38,7 +38,7 @@ except Exception as e:
 # ============================================================================
 print("\n[TEST 2] Building graph from JSON...")
 
-from compiler import GraphBuilder
+from vertexforge.compiler import GraphBuilder
 
 try:
     builder = GraphBuilder("config.json")
@@ -166,3 +166,4 @@ print("  Python (baseline) -> JSON (config.json)")
 print("  JSON (config.json) -> Python (compiler.py)")
 print("  JSON change -> Behavior change (no code edits)")
 print("\nReady for Phase 5: Cleanup and documentation")
+

@@ -15,18 +15,20 @@ import asyncio
 import sqlite3
 import uuid
 import os
+import shutil
 from datetime import datetime
 from typing import Dict, List, Optional
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
-from compiler import GraphBuilder
-from schema import GraphConfig
+from vertexforge.compiler import GraphBuilder, _build_initial_state, _extract_final_output
+from vertexforge.ingestion import IngestionService, SqliteArtifactRepository, create_default_registry
+from vertexforge.schema import GraphConfig
 from langchain_core.messages import HumanMessage
 
 # Phoenix Observability - setup tracing before any LangChain/LangGraph imports
@@ -48,6 +50,8 @@ if phoenix_endpoint:
 # Database setup
 DB_PATH = Path("data/vertexforge.db")
 DB_PATH.parent.mkdir(exist_ok=True)
+SOURCE_STORAGE_DIR = Path("data/sources")
+ARTIFACT_STORAGE_DIR = Path("data/artifacts")
 
 
 def init_db():
@@ -85,6 +89,34 @@ def init_db():
     conn.close()
 
 
+def get_ingestion_repository() -> SqliteArtifactRepository:
+    """Create an ingestion repository backed by the main app database."""
+    return SqliteArtifactRepository(
+        db_path=DB_PATH,
+        artifact_root=ARTIFACT_STORAGE_DIR,
+    )
+
+
+def get_ingestion_service() -> IngestionService:
+    """Create the ingestion service."""
+    return IngestionService(
+        repository=get_ingestion_repository(),
+        registry=create_default_registry(),
+    )
+
+
+def save_uploaded_file(upload: UploadFile) -> Path:
+    """Persist an uploaded file to local storage."""
+    SOURCE_STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    original_name = Path(upload.filename or "upload.bin").name
+    target_dir = SOURCE_STORAGE_DIR / uuid.uuid4().hex
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target_path = target_dir / original_name
+    with target_path.open("wb") as handle:
+        shutil.copyfileobj(upload.file, handle)
+    return target_path
+
+
 # Execution state tracking
 active_executions: Dict[str, Dict] = {}
 
@@ -113,7 +145,7 @@ async def run_pipeline_execution(execution_id: str):
         
         try:
             config = GraphConfig.model_validate(json.loads(pipeline["config_json"]))
-            builder = GraphBuilder(config)
+            builder = GraphBuilder(config, artifact_repository=get_ingestion_repository())
             graph = builder.build()
         except Exception as e:
             conn = sqlite3.connect(DB_PATH)
@@ -137,12 +169,9 @@ async def run_pipeline_execution(execution_id: str):
         }
         
         try:
+            initial_state = _build_initial_state(config, execution["input"])
             async for event in graph.astream_events(
-                {
-                    "messages": [HumanMessage(content=execution["input"])],
-                    "current_node": "START",
-                    "iteration_count": 0
-                },
+                initial_state,
                 version="v2",
             ):
                 event_type = event.get("event", "")
@@ -153,14 +182,8 @@ async def run_pipeline_execution(execution_id: str):
                     tool_calls.append({"tool": tool_name, "output": str(tool_output)})
             
             # Get final result
-            result = graph.invoke({
-                "messages": [HumanMessage(content=execution["input"])],
-                "current_node": "START",
-                "iteration_count": 0
-            })
-            
-            final_message = result["messages"][-1] if result.get("messages") else None
-            final_output = final_message.content if hasattr(final_message, "content") else str(final_message)
+            result = graph.invoke(initial_state)
+            final_output = _extract_final_output(config, result)
             
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
@@ -255,6 +278,78 @@ class NodeOutput(BaseModel):
     duration_ms: int
 
 
+class SourceResponse(BaseModel):
+    source_id: str
+    filename: str
+    display_name: str
+    mime_type: str
+    file_extension: str
+    size_bytes: int
+    sha256: str
+    storage_uri: str
+    detected_type: str
+    upload_status: str
+    created_at: str
+    artifact_count: int = 0
+
+
+class ArtifactResponse(BaseModel):
+    artifact_id: str
+    source_id: str
+    parent_artifact_id: Optional[str]
+    artifact_type: str
+    subtype: str
+    title: Optional[str]
+    status: str
+    content_format: str
+    content_uri: Optional[str]
+    preview_text: Optional[str]
+    payload: Dict = Field(default_factory=dict)
+    metadata: Dict = Field(default_factory=dict)
+    provenance: Dict = Field(default_factory=dict)
+    extraction: Dict = Field(default_factory=dict)
+    created_at: str
+
+
+def build_source_response(source, artifact_count: int = 0) -> SourceResponse:
+    """Convert a source model into an API response."""
+    return SourceResponse(
+        source_id=source.source_id,
+        filename=source.filename,
+        display_name=source.display_name,
+        mime_type=source.mime_type,
+        file_extension=source.file_extension,
+        size_bytes=source.size_bytes,
+        sha256=source.sha256,
+        storage_uri=source.storage_uri,
+        detected_type=source.detected_type,
+        upload_status=source.upload_status,
+        created_at=source.created_at,
+        artifact_count=artifact_count,
+    )
+
+
+def build_artifact_response(artifact) -> ArtifactResponse:
+    """Convert an artifact model into an API response."""
+    return ArtifactResponse(
+        artifact_id=artifact.artifact_id,
+        source_id=artifact.source_id,
+        parent_artifact_id=artifact.parent_artifact_id,
+        artifact_type=artifact.artifact_type,
+        subtype=artifact.subtype,
+        title=artifact.title,
+        status=artifact.status,
+        content_format=artifact.content_format,
+        content_uri=artifact.content_uri,
+        preview_text=artifact.preview_text,
+        payload=artifact.payload,
+        metadata=artifact.metadata,
+        provenance=artifact.provenance,
+        extraction=artifact.extraction,
+        created_at=artifact.created_at,
+    )
+
+
 # Database helpers
 def get_db():
     """Get database connection."""
@@ -303,6 +398,12 @@ async def execution_detail_page(execution_id: str):
     return serve_page("execution_detail.html")
 
 
+@app.get("/sources", response_class=HTMLResponse)
+async def sources_page():
+    """Serve the ingestion sources page."""
+    return serve_page("sources.html")
+
+
 @app.post("/api/pipelines", response_model=PipelineResponse)
 async def create_pipeline(pipeline: PipelineCreate):
     """Create a new pipeline configuration."""
@@ -310,7 +411,7 @@ async def create_pipeline(pipeline: PipelineCreate):
 
     try:
         config_obj = GraphConfig.model_validate(pipeline.config)
-        GraphBuilder(config_obj).build()
+        GraphBuilder(config_obj, artifact_repository=get_ingestion_repository()).validate_structure()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid config: {str(e)}")
     
@@ -503,6 +604,55 @@ async def list_executions():
     ]
 
 
+@app.post("/api/sources/upload", response_model=SourceResponse)
+async def upload_source(file: UploadFile = File(...)):
+    """Upload a file and ingest it into source/artifact storage."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Uploaded file must have a filename")
+
+    try:
+        saved_path = save_uploaded_file(file)
+        result = get_ingestion_service().ingest_file(saved_path)
+        return build_source_response(result.source, artifact_count=len(result.artifacts))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Source ingestion failed: {exc}") from exc
+    finally:
+        await file.close()
+
+
+@app.get("/api/sources", response_model=List[SourceResponse])
+async def list_sources():
+    """List all ingested sources."""
+    repository = get_ingestion_repository()
+    sources = repository.list_sources()
+    return [
+        build_source_response(source, artifact_count=len(repository.list_artifacts(source.source_id)))
+        for source in sources
+    ]
+
+
+@app.get("/api/sources/{source_id}", response_model=SourceResponse)
+async def get_source(source_id: str):
+    """Get a single ingested source."""
+    repository = get_ingestion_repository()
+    source = repository.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return build_source_response(source, artifact_count=len(repository.list_artifacts(source_id)))
+
+
+@app.get("/api/sources/{source_id}/artifacts", response_model=List[ArtifactResponse])
+async def get_source_artifacts(source_id: str):
+    """List artifacts generated for a source."""
+    repository = get_ingestion_repository()
+    source = repository.get_source(source_id)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return [build_artifact_response(artifact) for artifact in repository.list_artifacts(source_id)]
+
+
 # WebSocket for real-time execution streaming
 class ExecutionManager:
     """Manages active WebSocket connections for execution streaming."""
@@ -572,19 +722,13 @@ async def websocket_execute(websocket: WebSocket, execution_id: str):
         
         try:
             config = GraphConfig.model_validate(json.loads(pipeline["config_json"]))
-            builder = GraphBuilder(config)
+            builder = GraphBuilder(config, artifact_repository=get_ingestion_repository())
             graph = builder.build()
         except Exception as e:
             await safe_send({"type": "error", "message": f"Compilation error: {str(e)}"})
             return
         
-        # Prepare initial state
-        user_input = execution["input"]
-        initial_state = {
-            "messages": [HumanMessage(content=user_input)],
-            "current_node": "START",
-            "iteration_count": 0
-        }
+        initial_state = _build_initial_state(config, execution["input"])
         
         # Track execution
         start_time = datetime.now()
@@ -647,9 +791,7 @@ async def websocket_execute(websocket: WebSocket, execution_id: str):
             # Calculate duration
             duration = int((datetime.now() - start_time).total_seconds() * 1000)
             
-            # Extract final output
-            final_message = result["messages"][-1] if result.get("messages") else None
-            final_output = final_message.content if hasattr(final_message, "content") else str(final_message)
+            final_output = _extract_final_output(config, result)
             
             # Update execution record
             conn = get_db()
@@ -712,3 +854,4 @@ async def health_check():
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+

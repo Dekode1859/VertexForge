@@ -1,10 +1,12 @@
-"""
+﻿"""
 Schema Definition: Pydantic models for LangGraph JSON configuration.
 This defines the structure that compiler.py will consume.
 """
 
-from typing import List, Optional, Dict, Any, Literal
+from typing import List, Optional, Dict, Any, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from vertexforge.prompts import PromptRef
 
 
 # ============================================================================
@@ -24,9 +26,9 @@ class NodeConfig(BaseModel):
         description="LLM model identifier (e.g., 'llama3.2', 'claude-3-opus')"
     )
     
-    system_prompt: str = Field(
+    prompt_ref: PromptRef = Field(
         ...,
-        description="The system prompt that defines this agent's behavior"
+        description="Reference to the Phoenix prompt used as this node's system prompt"
     )
     
     temperature: float = Field(
@@ -46,11 +48,40 @@ class NodeConfig(BaseModel):
         description="Maximum tokens to generate (None = model default)"
     )
 
+    input_keys: List[str] = Field(
+        ...,
+        description="State fields this node should read as its input."
+    )
+
+    output_key: str = Field(
+        ...,
+        description="State field this node should write its final output into"
+    )
+
+    attached_source_ids: List[str] = Field(
+        default=[],
+        description="Uploaded source IDs that this node is allowed to access via source tools"
+    )
+
+    allowed_artifact_types: List[Literal["document", "page", "text_block", "sheet", "table"]] = Field(
+        default=[],
+        description="Artifact types that this node is allowed to read from attached sources"
+    )
+
+    restrict_to_attached_sources: bool = Field(
+        default=True,
+        description=(
+            "When true, generic filesystem tools are filtered out for nodes that use attached "
+            "sources, so the agent stays on the source-tool path by default"
+        )
+    )
+
     @model_validator(mode="after")
     def validate_node(self) -> "NodeConfig":
         if self.max_tokens is not None and self.max_tokens <= 0:
             raise ValueError("max_tokens must be greater than 0 when provided")
-
+        if not self.input_keys:
+            raise ValueError("LLM nodes require at least one input_key.")
         return self
 
 
@@ -61,9 +92,9 @@ class NodeConfig(BaseModel):
 class EdgeConfig(BaseModel):
     """Configuration for an edge between nodes."""
     
-    from_node: str = Field(
+    from_node: Union[str, List[str]] = Field(
         ...,
-        description="Source node ID, or 'START' for entry point",
+        description="Source node ID, 'START' for entry point, or list of source node IDs for joins",
         alias="from"
     )
     
@@ -79,6 +110,15 @@ class EdgeConfig(BaseModel):
     )
     
     model_config = ConfigDict(populate_by_name=True)
+
+    @model_validator(mode="after")
+    def validate_edge(self) -> "EdgeConfig":
+        if isinstance(self.from_node, list):
+            if not self.from_node:
+                raise ValueError("Multi-source edges require at least one source node.")
+            if "START" in self.from_node or "END" in self.from_node:
+                raise ValueError("Multi-source edges can only reference regular node IDs.")
+        return self
 
 
 # ============================================================================
@@ -105,9 +145,7 @@ class StateConfig(BaseModel):
     
     fields: List[StateField] = Field(
         default=[
-            StateField(name="messages", type="List[BaseMessage]", reducer="operator.add"),
-            StateField(name="current_node", type="str", default=""),
-            StateField(name="iteration_count", type="int", default=0)
+            StateField(name="iteration_count", type="int", reducer="operator.add", default=0)
         ],
         description="Fields that make up the graph state"
     )
@@ -156,33 +194,51 @@ class GraphConfig(BaseModel):
         default="START",
         description="Node ID where execution begins"
     )
+
+    input_key: Optional[str] = Field(
+        default=None,
+        description="State field where the graph's initial user input should be stored"
+    )
+
+    input_keys: List[str] = Field(
+        default=[],
+        description="State fields expected when the graph is started with structured inputs"
+    )
+
+    final_output_key: Optional[str] = Field(
+        default=None,
+        description="State field to use as the graph's final user-visible output"
+    )
     
     model_config = ConfigDict(
         json_schema_extra={
             "example": {
-                "graph_name": "research_pipeline",
+                "graph_name": "state_rewrite_pipeline",
                 "version": "1.0.0",
-                "description": "Extract entities, research them, summarize findings",
+                "description": "Rewrite an input through explicit state handoff",
+                "input_key": "source_text",
+                "final_output_key": "summary",
+                "state": {
+                    "fields": [
+                        {"name": "iteration_count", "type": "int", "reducer": "operator.add", "default": 0},
+                        {"name": "source_text", "type": "str", "default": ""},
+                        {"name": "summary", "type": "str", "default": ""}
+                    ]
+                },
                 "nodes": [
                     {
-                        "node_id": "extractor",
+                        "node_id": "summarizer",
                         "model": "llama3.2",
-                        "system_prompt": "Extract key entities from the input...",
+                        "prompt_ref": {"identifier": "vertexforge.brief_writer", "tag": "development"},
                         "temperature": 0.0,
-                        "tools": []
-                    },
-                    {
-                        "node_id": "researcher",
-                        "model": "llama3.2",
-                        "system_prompt": "Analyze the extracted entities...",
-                        "temperature": 0.7,
-                        "tools": []
+                        "tools": [],
+                        "input_keys": ["source_text"],
+                        "output_key": "summary"
                     }
                 ],
                 "edges": [
-                    {"from": "START", "to": "extractor"},
-                    {"from": "extractor", "to": "researcher"},
-                    {"from": "researcher", "to": "END"}
+                    {"from": "START", "to": "summarizer"},
+                    {"from": "summarizer", "to": "END"}
                 ]
             }
         }
@@ -192,6 +248,7 @@ class GraphConfig(BaseModel):
     def validate_graph(self) -> "GraphConfig":
         node_ids = [node.node_id for node in self.nodes]
         unique_node_ids = set(node_ids)
+        state_field_names = {field.name for field in self.state.fields}
 
         if len(unique_node_ids) != len(node_ids):
             duplicates = sorted({node_id for node_id in node_ids if node_ids.count(node_id) > 1})
@@ -203,39 +260,39 @@ class GraphConfig(BaseModel):
                     "Conditional edges are not supported yet. "
                     f"Remove condition from edge {edge.from_node} -> {edge.to_node}."
                 )
+            from_nodes = edge.from_node if isinstance(edge.from_node, list) else [edge.from_node]
+
             if edge.to_node == "START":
                 raise ValueError("Edges cannot target START.")
-            if edge.from_node == "END":
+            if "END" in from_nodes:
                 raise ValueError("Edges cannot originate from END.")
 
         start_targets = [edge.to_node for edge in self.edges if edge.from_node == "START"]
-        if len(start_targets) > 1:
-            raise ValueError(
-                f"Multiple START edges defined: {start_targets}. Only one START edge is allowed."
-            )
 
         if self.entry_point == "START":
-            if len(start_targets) != 1:
+            if len(start_targets) < 1:
                 raise ValueError(
-                    "entry_point is START, so exactly one START edge is required."
+                    "entry_point is START, so at least one START edge is required."
                 )
-            actual_entry = start_targets[0]
+            actual_entries = start_targets
         else:
             if self.entry_point not in unique_node_ids:
                 raise ValueError(
                     f"entry_point '{self.entry_point}' is not a valid node ID. "
                     f"Available nodes: {sorted(unique_node_ids)}"
                 )
-            if start_targets and start_targets[0] != self.entry_point:
+            if start_targets and start_targets != [self.entry_point]:
                 raise ValueError(
-                    f"entry_point '{self.entry_point}' conflicts with START edge to '{start_targets[0]}'."
+                    f"entry_point '{self.entry_point}' conflicts with START edges to '{start_targets}'."
                 )
-            actual_entry = self.entry_point
+            actual_entries = [self.entry_point]
 
         referenced_nodes = set()
         for edge in self.edges:
-            if edge.from_node not in {"START", "END"}:
-                referenced_nodes.add(edge.from_node)
+            from_nodes = edge.from_node if isinstance(edge.from_node, list) else [edge.from_node]
+            for from_node in from_nodes:
+                if from_node not in {"START", "END"}:
+                    referenced_nodes.add(from_node)
             if edge.to_node not in {"START", "END"}:
                 referenced_nodes.add(edge.to_node)
 
@@ -245,11 +302,14 @@ class GraphConfig(BaseModel):
 
         edge_map: Dict[str, List[str]] = {node_id: [] for node_id in unique_node_ids}
         for edge in self.edges:
-            if edge.from_node not in {"START", "END"} and edge.to_node not in {"START", "END"}:
-                edge_map[edge.from_node].append(edge.to_node)
+            from_nodes = edge.from_node if isinstance(edge.from_node, list) else [edge.from_node]
+            if edge.to_node not in {"START", "END"}:
+                for from_node in from_nodes:
+                    if from_node not in {"START", "END"}:
+                        edge_map[from_node].append(edge.to_node)
 
         reachable = set()
-        frontier = [actual_entry]
+        frontier = list(actual_entries)
         while frontier:
             current = frontier.pop()
             if current in reachable:
@@ -262,6 +322,32 @@ class GraphConfig(BaseModel):
             raise ValueError(
                 f"Nodes unreachable from the configured entry point '{actual_entry}': {orphaned_nodes}"
             )
+
+        if self.input_key is not None and self.input_key not in state_field_names:
+            raise ValueError(f"input_key '{self.input_key}' is not defined in state fields.")
+
+        missing_graph_input_keys = sorted(set(self.input_keys) - state_field_names)
+        if missing_graph_input_keys:
+            raise ValueError(
+                f"input_keys reference undefined state fields: {missing_graph_input_keys}"
+            )
+
+        if self.final_output_key is not None and self.final_output_key not in state_field_names:
+            raise ValueError(
+                f"final_output_key '{self.final_output_key}' is not defined in state fields."
+            )
+
+        for node in self.nodes:
+            missing_input_keys = sorted(set(node.input_keys) - state_field_names)
+            if missing_input_keys:
+                raise ValueError(
+                    f"Node '{node.node_id}' input_keys reference undefined state fields: "
+                    f"{missing_input_keys}"
+                )
+            if node.output_key not in state_field_names:
+                raise ValueError(
+                    f"Node '{node.node_id}' output_key '{node.output_key}' is not defined in state fields."
+                )
 
         return self
 
@@ -294,3 +380,4 @@ if __name__ == "__main__":
     # Print the schema as JSON
     import json
     print(json.dumps(GraphConfig.model_json_schema(), indent=2))
+

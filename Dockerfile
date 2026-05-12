@@ -8,7 +8,8 @@ RUN pip install uv
 # Copy project files
 COPY pyproject.toml uv.lock ./
 COPY README.md ./
-COPY api.py compiler.py schema.py tools.py ./
+COPY api.py ./
+COPY src/ ./src/
 COPY scripts/ ./scripts/
 COPY form.html ./
 COPY static/ ./static/
