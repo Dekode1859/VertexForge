@@ -1,4 +1,4 @@
-"""
+﻿"""
 Execute a JSON config file through the VertexForge compiler.
 
 Usage:
@@ -17,8 +17,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
-from compiler import GraphBuilder
-from schema import load_config
+from vertexforge.compiler import GraphBuilder
+from vertexforge.schema import load_config
 
 load_dotenv()
 
@@ -132,3 +132,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

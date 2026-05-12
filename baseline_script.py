@@ -1,4 +1,4 @@
-"""
+﻿"""
 Baseline Script: Hardcoded LangGraph Multi-Agent System
 Uses official Supervisor/Worker pattern with Ollama Cloud + Kimi K2.5
 """
@@ -14,7 +14,7 @@ from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, END, START
 from langgraph.prebuilt import create_react_agent
 
-from tools import RESEARCH_TOOLS, MATH_TOOLS
+from vertexforge.tools import RESEARCH_TOOLS, MATH_TOOLS
 
 # Load environment variables
 load_dotenv()
@@ -118,8 +118,8 @@ SUPERVISOR_PROMPT = """You are a supervisor managing a team of experts:
 Your job is to route the user's request to the appropriate expert.
 
 Rules:
-1. If the question involves CURRENT events, facts, or web info → use research_expert
-2. If the question involves MATH, calculations, or numbers → use math_expert
+1. If the question involves CURRENT events, facts, or web info â†’ use research_expert
+2. If the question involves MATH, calculations, or numbers â†’ use math_expert
 3. If unclear, ask clarifying questions or default to research_expert
 
 Respond with EXACTLY ONE word: "research_expert", "math_expert", or "FINISH" (if no routing needed)."""
@@ -317,6 +317,7 @@ if __name__ == "__main__":
         print(f"{'=' * 70}")
         
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        print(f"\nâŒ Error: {e}")
         import traceback
         traceback.print_exc()
+

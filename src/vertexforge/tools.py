@@ -1,4 +1,4 @@
-"""
+﻿"""
 Real Tool Definitions for LangGraph Agents
 These are actual functional tools, not stubs.
 """
@@ -14,6 +14,8 @@ import requests
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
+
+from vertexforge.ingestion.repository import ArtifactRepository
 
 
 # ============================================================================
@@ -170,7 +172,7 @@ def list_directory(
         
         items = []
         for item in sorted(dir_path.iterdir()):
-            item_type = "📁" if item.is_dir() else "📄"
+            item_type = "ðŸ“" if item.is_dir() else "ðŸ“„"
             size = item.stat().st_size if item.is_file() else "-"
             items.append(f"{item_type} {item.name:<40} {size}")
         
@@ -239,6 +241,151 @@ def extract_urls(text: Annotated[str, "Text to extract URLs from"]) -> str:
 
 
 # ============================================================================
+# SOURCE ACCESS TOOLS
+# ============================================================================
+
+SOURCE_TOOL_NAMES = [
+    "list_sources",
+    "get_source_metadata",
+    "list_source_artifacts",
+    "read_text_artifact",
+    "read_table_artifact",
+    "search_artifacts",
+]
+
+
+def create_source_tools(
+    repository: ArtifactRepository,
+    allowed_source_ids: List[str],
+    allowed_artifact_types: Optional[List[str]] = None,
+):
+    """Create source-aware tools scoped to the allowed sources for a node."""
+    allowed_source_set = set(allowed_source_ids)
+    allowed_artifact_set = set(allowed_artifact_types or [])
+
+    def source_is_allowed(source_id: str) -> bool:
+        return source_id in allowed_source_set
+
+    def artifact_is_allowed(artifact_type: str) -> bool:
+        return not allowed_artifact_set or artifact_type in allowed_artifact_set
+
+    def get_accessible_artifact(artifact_id: str):
+        for source_id in allowed_source_set:
+            for artifact in repository.list_artifacts(source_id):
+                if artifact.artifact_id == artifact_id and artifact_is_allowed(artifact.artifact_type):
+                    return artifact
+        return None
+
+    @tool("list_sources")
+    def list_sources_tool() -> str:
+        """List uploaded sources accessible to this node."""
+        sources = [source for source in repository.list_sources() if source_is_allowed(source.source_id)]
+        if not sources:
+            return "No accessible sources are attached to this node."
+        lines = [
+            f"- {source.source_id}: {source.filename} ({source.detected_type}, {source.size_bytes} bytes)"
+            for source in sources
+        ]
+        return "Accessible sources:\n" + "\n".join(lines)
+
+    @tool("get_source_metadata")
+    def get_source_metadata_tool(
+        source_id: Annotated[str, "The source ID to inspect"]
+    ) -> str:
+        """Get metadata for an attached source."""
+        if not source_is_allowed(source_id):
+            return f"Source '{source_id}' is not accessible to this node."
+        source = repository.get_source(source_id)
+        if source is None:
+            return f"Source '{source_id}' was not found."
+        return json.dumps(source.model_dump(), indent=2)
+
+    @tool("list_source_artifacts")
+    def list_source_artifacts_tool(
+        source_id: Annotated[str, "The source ID whose artifacts should be listed"]
+    ) -> str:
+        """List accessible artifacts for an attached source."""
+        if not source_is_allowed(source_id):
+            return f"Source '{source_id}' is not accessible to this node."
+        artifacts = [
+            artifact
+            for artifact in repository.list_artifacts(source_id)
+            if artifact_is_allowed(artifact.artifact_type)
+        ]
+        if not artifacts:
+            return "No accessible artifacts found for this source."
+        lines = [
+            f"- {artifact.artifact_id}: {artifact.artifact_type} ({artifact.subtype})"
+            for artifact in artifacts
+        ]
+        return "Accessible artifacts:\n" + "\n".join(lines)
+
+    @tool("read_text_artifact")
+    def read_text_artifact_tool(
+        artifact_id: Annotated[str, "The text-bearing artifact ID to read"]
+    ) -> str:
+        """Read the text content of an accessible text or page artifact."""
+        artifact = get_accessible_artifact(artifact_id)
+        if artifact is None:
+            return f"Artifact '{artifact_id}' is not accessible to this node."
+        if artifact.artifact_type not in {"text_block", "page"}:
+            return f"Artifact '{artifact_id}' does not contain readable text."
+        text = artifact.payload.get("text", "")
+        return text if text else f"Artifact '{artifact_id}' contains no extracted text."
+
+    @tool("read_table_artifact")
+    def read_table_artifact_tool(
+        artifact_id: Annotated[str, "The table artifact ID to read"]
+    ) -> str:
+        """Read a structured table artifact from an attached source."""
+        artifact = get_accessible_artifact(artifact_id)
+        if artifact is None:
+            return f"Artifact '{artifact_id}' is not accessible to this node."
+        if artifact.artifact_type != "table":
+            return f"Artifact '{artifact_id}' is not a table artifact."
+        return json.dumps(artifact.payload, indent=2)
+
+    @tool("search_artifacts")
+    def search_artifacts_tool(
+        query: Annotated[str, "Text to search for across accessible artifacts"]
+    ) -> str:
+        """Search accessible artifacts for a text match."""
+        needle = query.lower()
+        matches = []
+        for source_id in allowed_source_set:
+            source = repository.get_source(source_id)
+            for artifact in repository.list_artifacts(source_id):
+                if not artifact_is_allowed(artifact.artifact_type):
+                    continue
+                haystacks = [artifact.preview_text or "", json.dumps(artifact.payload)]
+                matched_text = next(
+                    (haystack for haystack in haystacks if needle in haystack.lower()),
+                    None,
+                )
+                if matched_text is not None:
+                    lowered = matched_text.lower()
+                    start = max(lowered.find(needle) - 40, 0)
+                    end = min(start + 120, len(matched_text))
+                    snippet = matched_text[start:end].replace("\n", " ")
+                    matches.append(
+                        f"- {source.filename if source else source_id} :: {artifact.artifact_id} :: "
+                        f"{artifact.artifact_type} :: {snippet}"
+                    )
+        if not matches:
+            return f"No accessible artifacts matched '{query}'."
+        return "Matching artifacts:\n" + "\n".join(matches)
+
+    return [
+        list_sources_tool,
+        get_source_metadata_tool,
+        list_source_artifacts_tool,
+        read_text_artifact_tool,
+        read_table_artifact_tool,
+        search_artifacts_tool,
+    ]
+
+
+# ============================================================================
 # TOOL COLLECTIONS FOR AGENTS
 # ============================================================================
 
@@ -260,3 +407,4 @@ if __name__ == "__main__":
     
     print("\nTesting get_current_date...")
     print(get_current_date.invoke({}))
+

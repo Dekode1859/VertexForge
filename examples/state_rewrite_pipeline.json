@@ -1,0 +1,101 @@
+{
+  "graph_name": "state_rewrite_pipeline",
+  "version": "1.0.0",
+  "description": "Rewrite one input into a brief, a newsletter intro, and a final executive summary using explicit state handoff.",
+  "input_key": "source_text",
+  "final_output_key": "executive_summary",
+  "state": {
+    "fields": [
+      {
+        "name": "iteration_count",
+        "type": "int",
+        "reducer": "operator.add",
+        "default": 0
+      },
+      {
+        "name": "source_text",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "brief",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "newsletter_intro",
+        "type": "str",
+        "default": ""
+      },
+      {
+        "name": "executive_summary",
+        "type": "str",
+        "default": ""
+      }
+    ]
+  },
+  "nodes": [
+    {
+      "node_id": "brief_writer",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "vertexforge.brief_writer",
+        "tag": "development"
+      },
+      "temperature": 0.2,
+      "tools": [],
+      "input_keys": [
+        "source_text"
+      ],
+      "output_key": "brief"
+    },
+    {
+      "node_id": "newsletter_writer",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "vertexforge.newsletter_writer",
+        "tag": "development"
+      },
+      "temperature": 0.4,
+      "tools": [],
+      "input_keys": [
+        "brief"
+      ],
+      "output_key": "newsletter_intro"
+    },
+    {
+      "node_id": "executive_summarizer",
+      "model": "kimi-k2.5",
+      "prompt_ref": {
+        "identifier": "vertexforge.executive_summarizer",
+        "tag": "development"
+      },
+      "temperature": 0.3,
+      "tools": [],
+      "input_keys": [
+        "brief",
+        "newsletter_intro"
+      ],
+      "output_key": "executive_summary"
+    }
+  ],
+  "edges": [
+    {
+      "from": "START",
+      "to": "brief_writer"
+    },
+    {
+      "from": "brief_writer",
+      "to": "newsletter_writer"
+    },
+    {
+      "from": "newsletter_writer",
+      "to": "executive_summarizer"
+    },
+    {
+      "from": "executive_summarizer",
+      "to": "END"
+    }
+  ],
+  "entry_point": "START"
+}

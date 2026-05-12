@@ -1,4 +1,4 @@
-"""Repository-owned runtime smoke check for VertexForge.
+﻿"""Repository-owned runtime smoke check for VertexForge.
 
 This script validates the Python version and verifies that the core
 application modules can be imported in the active environment.
@@ -51,3 +51,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

@@ -25,6 +25,7 @@ wheels/
 venv/
 ENV/
 env/
+.uv-cache/
 
 # IDE
 .vscode/
@@ -113,3 +114,11 @@ coverage.xml
 *.backup
 *.old
 *.orig
+
+data/
+api.py
+baseline_script.py
+run_from_json.py
+test_baseline.py
+test_swap.py
+static/*
